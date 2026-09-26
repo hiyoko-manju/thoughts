@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>지참약 사진 식별</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<header>
+  <h1>지참약 사진 식별 <span class="tag">보조 도구</span></h1>
+  <p class="warn">결과는 <b>후보</b>일 뿐입니다. 각인·모양·색을 실물과 직접 대조하고, 최종 확인은 약사와 함께 하세요.
+    사진에 환자 이름·등록번호가 나오지 않게 찍어 주세요.</p>
+  <p id="db-status" class="muted"></p>
+</header>
+
+<main>
+  <section class="card">
+    <h2>1. 사진 올리기</h2>
+    <ul class="tips">
+      <li>흰 종이 위에 알약을 떨어뜨려 놓고, 위에서 밝게 찍어 주세요.</li>
+      <li>각인이 보이게 앞면 한 장, 뒤집어서 뒷면 한 장을 찍으면 정확도가 올라갑니다.</li>
+      <li>한 장에 여러 종류가 있어도 됩니다 (최대 6장).</li>
+    </ul>
+    <label class="btn primary">
+      📷 촬영 / 사진 선택
+      <input id="file" type="file" accept="image/*" capture="environment" multiple hidden>
+    </label>
+    <div id="previews" class="previews"></div>
+    <button id="run" class="btn primary" disabled>분석하기</button>
+    <p id="progress" class="muted"></p>
+  </section>
+
+  <section id="issues" class="card hidden"></section>
+  <section id="results"></section>
+
+  <section id="summary" class="card hidden">
+    <h2>3. 확인 목록</h2>
+    <table>
+      <thead><tr><th>#</th><th>외형</th><th>확인한 약</th><th>개수</th></tr></thead>
+      <tbody></tbody>
+    </table>
+    <button class="btn" onclick="window.print()">인쇄</button>
+  </section>
+</main>
+
+<script src="/static/app.js"></script>
+</body>
+</html>
