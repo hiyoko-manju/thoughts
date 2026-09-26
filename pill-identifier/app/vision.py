@@ -74,8 +74,12 @@ class VisionError(Exception):
     pass
 
 
-def extract_pill_features(images: list[tuple[bytes, str]], client: anthropic.Anthropic | None = None) -> dict:
-    """images: [(바이트, media_type)] — 같은 알약의 앞/뒷면 사진을 함께 보내도 된다."""
+def extract_pill_features(images: list[tuple[bytes, str]], single: bool = False,
+                          client: anthropic.Anthropic | None = None) -> dict:
+    """images: [(바이트, media_type)] — 같은 알약의 앞/뒷면 사진을 함께 보내도 된다.
+
+    single=True: 특정 알약 하나를 재촬영한 경우. 모든 사진을 같은 알약으로 보고 한 항목으로 합친다.
+    """
     client = client or anthropic.Anthropic()
     content = []
     for i, (data, media_type) in enumerate(images, 1):
@@ -85,7 +89,12 @@ def extract_pill_features(images: list[tuple[bytes, str]], client: anthropic.Ant
             "source": {"type": "base64", "media_type": media_type,
                        "data": base64.standard_b64encode(data).decode("ascii")},
         })
-    content.append({"type": "text", "text": "사진 속 알약들의 외형 특징을 기록해 주세요."})
+    if single:
+        content.append({"type": "text", "text": (
+            "모든 사진은 같은 한 종류의 알약을 여러 각도·면에서 다시 찍은 것입니다. "
+            "사진들을 종합해 pills에 하나의 항목만 기록하고, 앞·뒷면 각인을 모두 채워 주세요.")})
+    else:
+        content.append({"type": "text", "text": "사진 속 알약들의 외형 특징을 기록해 주세요."})
 
     response = client.beta.messages.create(
         model=MODEL,

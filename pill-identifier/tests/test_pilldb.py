@@ -61,7 +61,7 @@ def test_no_imprint_falls_back_to_shape_color(conn):
 def test_identify_endpoint(conn, monkeypatch):
     fake = {"pills": [pill(imprint_front="EX", imprint_back="SR", shape="타원형", color_primary="노랑")],
             "photo_issues": []}
-    monkeypatch.setattr(main, "extract_pill_features", lambda images: fake)
+    monkeypatch.setattr(main, "extract_pill_features", lambda images, single=False: fake)
     client = TestClient(main.app)
     r = client.post("/api/identify", files=[("images", ("a.jpg", b"\xff\xd8fake", "image/jpeg"))])
     assert r.status_code == 200
@@ -74,3 +74,23 @@ def test_rejects_non_image(conn):
     client = TestClient(main.app)
     r = client.post("/api/identify", files=[("images", ("a.txt", b"hi", "text/plain"))])
     assert r.status_code == 400
+
+
+def test_manual_search_endpoint(conn):
+    client = TestClient(main.app)
+    r = client.post("/api/search", json={"imprint_front": "dm", "imprint_back": "5", "shape": "원형"})
+    assert r.status_code == 200
+    assert r.json()["candidates"][0]["item_seq"] == "DEMO0001"
+
+
+def test_retake_passes_single_flag(conn, monkeypatch):
+    seen = {}
+
+    def fake(images, single=False):
+        seen["single"] = single
+        return {"pills": [], "photo_issues": []}
+
+    monkeypatch.setattr(main, "extract_pill_features", fake)
+    client = TestClient(main.app)
+    client.post("/api/identify?single=true", files=[("images", ("a.jpg", b"x", "image/jpeg"))])
+    assert seen["single"] is True

@@ -8,11 +8,13 @@ const summaryEl = document.getElementById("summary");
 
 let files = [];
 let pills = [];
+let options = { shapes: [], colors: [], forms: [] };
 
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) =>
   ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 
 fetch("/api/status").then((r) => r.json()).then((s) => {
+  options = s;
   const el = document.getElementById("db-status");
   if (s.total === 0) {
     el.innerHTML = "⚠️ 낱알식별 DB가 비어 있습니다. <code>scripts/sync_mfds.py</code>로 식약처 데이터를 받아 주세요.";
@@ -99,47 +101,148 @@ function render(data) {
     resultsEl.innerHTML = '<section class="card"><p>사진에서 알약을 찾지 못했습니다.</p></section>';
     return;
   }
-  resultsEl.innerHTML = '<h2 class="section-title">2. 알약별 후보 확인</h2>' + pills.map((p, i) => {
-    const lowConf = !p.imprint_front && !p.imprint_back || ["낮음", "없음"].includes(p.imprint_confidence);
-    const cands = p.candidates.map((c) => `
-      <label class="cand">
-        <input type="radio" name="pill${i}" value="${esc(c.item_seq)}">
-        ${c.item_image ? `<img src="${esc(c.item_image)}" alt="" loading="lazy">` : '<div class="noimg">이미지 없음</div>'}
-        <div>
-          <b>${esc(c.item_name)}</b> <span class="muted">${esc(c.entp_name)} · ${esc(c.etc_otc_name)}</span><br>
-          각인 <code>${esc(c.print_front) || "-"}</code> / <code>${esc(c.print_back) || "-"}</code>
-          · ${esc(c.color)} ${esc(c.drug_shape)} · ${esc(c.form_code_name)}
-          ${c.line ? `· 분할선 ${esc(c.line)}` : ""} ${c.size ? `· ${esc(c.size)}mm` : ""}<br>
-          <small>각인 ${checkBadge(c.checks["각인"])} 모양 ${checkBadge(c.checks["모양"])}
-          색상 ${checkBadge(c.checks["색상"])} 제형 ${checkBadge(c.checks["제형"])}
-          · 유사도 ${c.score}</small>
-        </div>
-      </label>`).join("");
-    return `
-      <section class="card pill">
-        <h3>#${i + 1} ${esc(p.label)} <span class="muted">× ${p.count}</span></h3>
-        <p class="features">
-          ${esc(describe(p))}
-          ${p.score_line !== "없음" && p.score_line !== "불명" ? ` · 분할선 ${esc(p.score_line)}` : ""}
-          ${p.mark_description ? ` · 마크: ${esc(p.mark_description)}` : ""}
-          ${p.package_text ? `<br>포장 인쇄: <b>${esc(p.package_text)}</b>` : ""}
-          ${p.notes ? `<br><span class="muted">${esc(p.notes)}</span>` : ""}
-        </p>
-        ${lowConf ? '<p class="warn">각인이 확실하지 않습니다. 모양·색만으로는 약을 특정할 수 없으니 재촬영하거나 약사에게 의뢰하세요.</p>' : ""}
-        ${cands || '<p class="muted">DB에서 일치하는 후보가 없습니다.</p>'}
-        <label class="cand none"><input type="radio" name="pill${i}" value="__none">해당 없음 / 식별 불가 (약사 의뢰)</label>
-      </section>`;
-  }).join("");
-
-  resultsEl.querySelectorAll("input[type=radio]").forEach((el) =>
-    el.addEventListener("change", () => {
-      const i = Number(el.name.slice(4));
-      pills[i].chosen = el.value === "__none" ? null : pills[i].candidates.find((c) => c.item_seq === el.value);
-      pills[i].decided = true;
-      renderSummary();
-    }));
+  resultsEl.innerHTML = '<h2 class="section-title">2. 알약별 후보 확인</h2>' +
+    pills.map((_, i) => `<section class="card pill" id="pill-${i}"></section>`).join("");
+  pills.forEach((_, i) => renderPill(i));
   renderSummary();
 }
+
+// 사진 판독만으로 확정하기 어려운 경우 → 재촬영/각인 입력을 권한다.
+function helpReason(p) {
+  const c = p.candidates;
+  if (p.source !== "manual" && ((!p.imprint_front && !p.imprint_back) || ["낮음", "없음"].includes(p.imprint_confidence)))
+    return "각인이 잘 읽히지 않았습니다. 모양·색만으로는 약을 특정할 수 없습니다.";
+  if (!c.length) return "일치하는 후보를 찾지 못했습니다.";
+  if (c.length >= 2 && c[1].score >= c[0].score - 10) return `비슷한 후보가 ${c.filter((x) => x.score >= c[0].score - 10).length}개 있습니다.`;
+  if (c[0].checks["각인"] === "partial") return "각인 일부가 불확실합니다.";
+  return null;
+}
+
+const opts = (list, sel) => list.map((v) => `<option${v === sel ? " selected" : ""}>${esc(v)}</option>`).join("");
+
+function renderPill(i) {
+  const p = pills[i];
+  const el = document.getElementById(`pill-${i}`);
+  const reason = helpReason(p);
+  const cands = p.candidates.map((c) => `
+    <label class="cand">
+      <input type="radio" name="pill${i}" value="${esc(c.item_seq)}"${p.chosen?.item_seq === c.item_seq ? " checked" : ""}>
+      ${c.item_image ? `<img src="${esc(c.item_image)}" alt="" loading="lazy">` : '<div class="noimg">이미지 없음</div>'}
+      <div>
+        <b>${esc(c.item_name)}</b> <span class="muted">${esc(c.entp_name)} · ${esc(c.etc_otc_name)}</span><br>
+        각인 <code>${esc(c.print_front) || "-"}</code> / <code>${esc(c.print_back) || "-"}</code>
+        · ${esc(c.color)} ${esc(c.drug_shape)} · ${esc(c.form_code_name)}
+        ${c.line ? `· 분할선 ${esc(c.line)}` : ""} ${c.size ? `· ${esc(c.size)}mm` : ""}<br>
+        <small>각인 ${checkBadge(c.checks["각인"])} 모양 ${checkBadge(c.checks["모양"])}
+        색상 ${checkBadge(c.checks["색상"])} 제형 ${checkBadge(c.checks["제형"])}
+        · 유사도 ${c.score}</small>
+      </div>
+    </label>`).join("");
+
+  el.innerHTML = `
+    <h3>#${i + 1} ${esc(p.label)} <span class="muted">× ${p.count}</span>
+      ${p.source === "manual" ? '<span class="src">각인 입력</span>' : p.source === "retake" ? '<span class="src">재촬영</span>' : ""}</h3>
+    <p class="features">
+      ${esc(describe(p))}
+      ${p.score_line && p.score_line !== "없음" && p.score_line !== "불명" ? ` · 분할선 ${esc(p.score_line)}` : ""}
+      ${p.mark_description ? ` · 마크: ${esc(p.mark_description)}` : ""}
+      ${p.package_text ? `<br>포장 인쇄: <b>${esc(p.package_text)}</b>` : ""}
+      ${p.notes ? `<br><span class="muted">${esc(p.notes)}</span>` : ""}
+    </p>
+    ${reason ? `
+      <div class="help">
+        <p>🔍 ${esc(reason)}</p>
+        <div class="help-actions">
+          <label class="btn primary">📷 이 알약만 다시 찍기
+            <input type="file" accept="image/*" capture="environment" multiple hidden data-act="retake"></label>
+          <button class="btn" data-act="manual">⌨️ 각인 입력</button>
+        </div>
+        <p class="muted small">재촬영: 이 알약만 흰 종이 위에 놓고 앞면·뒷면을 한 장씩 찍어 주세요.</p>
+      </div>` : ""}
+    <p class="busy muted hidden"></p>
+    ${cands || '<p class="muted">DB에서 일치하는 후보가 없습니다.</p>'}
+    <label class="cand none"><input type="radio" name="pill${i}" value="__none"${p.decided && !p.chosen ? " checked" : ""}>해당 없음 / 식별 불가 (약사 의뢰)</label>
+    ${reason ? "" : `
+      <p class="small muted alt">결과가 실물과 다르면:
+        <label class="link">다시 찍기<input type="file" accept="image/*" capture="environment" multiple hidden data-act="retake"></label>
+        · <button class="link" data-act="manual">각인 입력</button></p>`}
+    <form class="manual hidden" data-act="search">
+      <p class="small muted">실물에서 읽은 각인을 입력하세요. 사진 판독 값이 미리 채워져 있습니다.</p>
+      <div class="grid">
+        <label>앞면 각인<input name="imprint_front" value="${esc(p.imprint_front)}" autocapitalize="characters"></label>
+        <label>뒷면 각인<input name="imprint_back" value="${esc(p.imprint_back)}" autocapitalize="characters"></label>
+        <label>모양<select name="shape">${opts(options.shapes, p.shape)}</select></label>
+        <label>색상<select name="color_primary">${opts(options.colors, p.color_primary)}</select></label>
+        <label>제형<select name="form">${opts(options.forms, p.form)}</select></label>
+      </div>
+      <button class="btn primary">검색</button>
+    </form>`;
+}
+
+function setBusy(i, text) {
+  const b = document.querySelector(`#pill-${i} .busy`);
+  b.textContent = text || "";
+  b.classList.toggle("hidden", !text);
+}
+
+resultsEl.addEventListener("change", async (e) => {
+  const card = e.target.closest(".pill");
+  if (!card) return;
+  const i = Number(card.id.slice(5));
+  if (e.target.type === "radio") {
+    pills[i].chosen = e.target.value === "__none" ? null : pills[i].candidates.find((c) => c.item_seq === e.target.value);
+    pills[i].decided = true;
+    renderSummary();
+  } else if (e.target.dataset.act === "retake" && e.target.files.length) {
+    const picked = [...e.target.files].slice(0, 4);
+    setBusy(i, "다시 분석 중… (20~60초)");
+    try {
+      const form = new FormData();
+      for (const [k, f] of picked.entries()) form.append("images", await shrink(f), `retake${k + 1}.jpg`);
+      const r = await fetch("/api/identify?single=true", { method: "POST", body: form });
+      const data = await r.json();
+      if (!r.ok) throw new Error(data.detail || `오류 ${r.status}`);
+      if (!data.pills.length) throw new Error("사진에서 알약을 찾지 못했습니다. " + data.photo_issues.join(" "));
+      pills[i] = { ...data.pills[0], label: pills[i].label, count: pills[i].count, source: "retake", chosen: null, decided: false };
+      renderPill(i);
+      renderSummary();
+      if (data.photo_issues.length) setBusy(i, "📸 " + data.photo_issues.join(" "));
+    } catch (err) {
+      setBusy(i, "⚠️ " + err.message);
+    }
+  }
+});
+
+resultsEl.addEventListener("click", (e) => {
+  if (e.target.dataset.act !== "manual") return;
+  const form = e.target.closest(".pill").querySelector("form.manual");
+  form.classList.remove("hidden");
+  form.querySelector("input").focus();
+});
+
+resultsEl.addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const i = Number(e.target.closest(".pill").id.slice(5));
+  const q = Object.fromEntries(new FormData(e.target));
+  if (!q.imprint_front.trim() && !q.imprint_back.trim()) {
+    setBusy(i, "각인을 한 면 이상 입력해 주세요.");
+    return;
+  }
+  setBusy(i, "검색 중…");
+  try {
+    const r = await fetch("/api/search", {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(q),
+    });
+    const data = await r.json();
+    if (!r.ok) throw new Error(data.detail || `오류 ${r.status}`);
+    pills[i] = { ...pills[i], ...q, imprint_confidence: "높음", has_mark: false,
+      candidates: data.candidates, source: "manual", chosen: null, decided: false };
+    renderPill(i);
+    renderSummary();
+  } catch (err) {
+    setBusy(i, "⚠️ " + err.message);
+  }
+});
 
 function renderSummary() {
   summaryEl.classList.remove("hidden");

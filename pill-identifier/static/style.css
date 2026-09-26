@@ -43,6 +43,21 @@ h3 { font-size: 1rem; margin: 0 0 6px; }
 code { background: var(--bg); padding: 0 4px; border-radius: 4px; }
 table { width: 100%; border-collapse: collapse; font-size: .92rem; }
 th, td { border-bottom: 1px solid var(--line); padding: 8px 6px; text-align: left; vertical-align: top; }
+.small { font-size: .85rem; }
+.src { font-size: .72rem; font-weight: 500; border: 1px solid var(--primary); color: var(--primary);
+  padding: 1px 6px; border-radius: 99px; margin-left: 4px; vertical-align: middle; }
+.help { background: var(--warn-bg); border-radius: 8px; padding: 10px 12px; margin-bottom: 10px; }
+.help p { margin: 0 0 6px; color: var(--warn); }
+.help p.muted { color: var(--muted); margin: 4px 0 0; }
+.help-actions .btn { margin: 4px 6px 4px 0; }
+.busy { margin: 0 0 8px; }
+.alt { margin: 6px 0 0; }
+.link { background: none; border: 0; padding: 0; color: var(--primary); cursor: pointer; font: inherit; text-decoration: underline; }
+form.manual { border-top: 1px dashed var(--line); margin-top: 10px; padding-top: 10px; }
+.grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 8px; margin-bottom: 8px; }
+.grid label { display: flex; flex-direction: column; font-size: .85rem; color: var(--muted); gap: 2px; }
+.grid input, .grid select { font-size: 1rem; padding: 8px; border: 1px solid var(--line); border-radius: 6px;
+  background: var(--card); color: var(--text); }
 @media (max-width: 520px) {
   .cand { flex-wrap: wrap; }
   .cand img, .noimg { width: 90px; height: 50px; }

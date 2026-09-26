@@ -1,12 +1,13 @@
 from pathlib import Path
 
 import anthropic
-from fastapi import FastAPI, File, HTTPException, UploadFile
+from fastapi import FastAPI, File, HTTPException, Query, UploadFile
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel
 
 from . import pilldb
-from .vision import VisionError, extract_pill_features
+from .vision import COLORS, FORMS, SHAPES, VisionError, extract_pill_features
 
 STATIC = Path(__file__).resolve().parent.parent / "static"
 ALLOWED_TYPES = {"image/jpeg", "image/png", "image/webp", "image/gif"}
@@ -25,11 +26,27 @@ def index():
 @app.get("/api/status")
 def status():
     with pilldb.connect() as conn:
-        return pilldb.stats(conn)
+        return {**pilldb.stats(conn), "shapes": SHAPES, "colors": COLORS, "forms": FORMS}
+
+
+class ManualQuery(BaseModel):
+    imprint_front: str = ""
+    imprint_back: str = ""
+    shape: str = "불명"
+    color_primary: str = "불명"
+    color_secondary: str = "없음"
+    form: str = "불명"
+
+
+@app.post("/api/search")
+def search(q: ManualQuery):
+    """사진 판독이 애매할 때 간호사가 직접 읽은 각인으로 검색. 외부 전송 없이 로컬 DB만 쓴다."""
+    with pilldb.connect() as conn:
+        return {"candidates": pilldb.find_candidates(conn, q.model_dump())}
 
 
 @app.post("/api/identify")
-async def identify(images: list[UploadFile] = File(...)):
+async def identify(images: list[UploadFile] = File(...), single: bool = Query(False)):
     if not images or len(images) > MAX_IMAGES:
         raise HTTPException(400, f"사진은 1~{MAX_IMAGES}장까지 올릴 수 있습니다.")
     payload = []
@@ -43,7 +60,7 @@ async def identify(images: list[UploadFile] = File(...)):
     # 사진은 메모리에서만 처리하고 서버에 저장하지 않는다.
 
     try:
-        features = extract_pill_features(payload)
+        features = extract_pill_features(payload, single=single)
     except VisionError as e:
         raise HTTPException(502, str(e))
     except anthropic.RateLimitError:
