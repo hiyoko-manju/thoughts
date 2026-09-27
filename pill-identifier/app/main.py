@@ -21,7 +21,7 @@ from .vision import COLORS, FORMS, SHAPES, VisionError, extract_pill_features
 STATIC = Path(__file__).resolve().parent.parent / "static"
 ALLOWED_TYPES = {"image/jpeg", "image/png", "image/webp", "image/gif"}
 MAX_IMAGES = 6
-MAX_BYTES = 5 * 1024 * 1024  # 브라우저에서 축소해 보내므로 보통 1MB 미만
+MAX_BYTES = 15 * 1024 * 1024  # 브라우저에서 긴 변 4096px로 줄여 보내므로 보통 2~5MB
 
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger("pill")
@@ -146,7 +146,7 @@ async def identify(images: list[UploadFile] = File(...), single: bool = Query(Fa
             raise HTTPException(400, f"지원하지 않는 형식입니다: {f.content_type}")
         data = await f.read()
         if len(data) > MAX_BYTES:
-            raise HTTPException(400, "사진 용량이 너무 큽니다 (최대 5MB).")
+            raise HTTPException(400, "사진 용량이 너무 큽니다 (최대 15MB).")
         payload.append((data, f.content_type))
     # 사진은 메모리에서만 처리하고 서버에 저장하지 않는다.
 

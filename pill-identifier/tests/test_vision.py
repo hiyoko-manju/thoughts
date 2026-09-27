@@ -110,3 +110,12 @@ def test_crop_box_clamps_and_rejects_tiny():
     img = Image.new("RGB", (500, 400))
     assert vision.crop_box(img, 450, 350, 900, 900).size[0] <= 500
     assert vision.crop_box(img, 10, 10, 12, 12) is None
+
+
+def test_zoom_crops_from_full_resolution_with_margin():
+    photo = vision.prepare_image(jpeg(4032, 3024))
+    assert photo.view.size == (2576, 1932) and photo.full.size == (4032, 3024)
+    # 모델이 알약보다 작게(40px) 상자를 줘도, 최소 크기와 여유를 붙여 원본 해상도에서 자른다
+    crop = vision.crop_photo(photo, 1000, 1000, 1040, 1040, pad=vision.ZOOM_PAD)
+    k = 4032 / 2576
+    assert crop.width >= vision.MIN_ZOOM_VIEW * k * (1 + 2 * vision.ZOOM_PAD) - 2

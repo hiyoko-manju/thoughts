@@ -29,8 +29,9 @@ fetch("/api/status").then((r) => r.json()).then((s) => {
 
 // ---------- 1. 사진 올리기 ----------
 
-// 긴 변 2576px JPEG로 맞춰 전송 (Claude 비전의 최대 해상도). 촬영 정보(EXIF)도 이때 빠진다.
-function shrink(file, edge = 2576) {
+// 긴 변 4096px JPEG로 맞춰 전송. 서버가 모델용(2576px)으로 줄이고, 확대는 이 원본에서 잘라
+// 작은 알약의 각인도 선명하게 본다. 촬영 정보(EXIF)도 이때 빠진다.
+function shrink(file, edge = 4096) {
   return new Promise((resolve, reject) => {
     const img = new Image();
     img.onload = () => {
@@ -40,7 +41,7 @@ function shrink(file, edge = 2576) {
       c.height = Math.round(img.height * scale);
       c.getContext("2d").drawImage(img, 0, 0, c.width, c.height);
       URL.revokeObjectURL(img.src);
-      c.toBlob((b) => (b ? resolve(b) : reject(new Error("이미지 변환 실패"))), "image/jpeg", 0.92);
+      c.toBlob((b) => (b ? resolve(b) : reject(new Error("이미지 변환 실패"))), "image/jpeg", 0.9);
     };
     img.onerror = () => reject(new Error("이미지를 읽을 수 없습니다"));
     img.src = URL.createObjectURL(file);
@@ -190,11 +191,18 @@ function helpReason(p) {
   if (p.source !== "manual" && ((!p.imprint_front && !p.imprint_back) || ["낮음", "없음"].includes(p.imprint_confidence)))
     return "각인이 잘 읽히지 않았습니다. 모양·색만으로는 약을 특정할 수 없습니다.";
   if (!c.length) return "일치하는 후보를 찾지 못했습니다.";
-  const close = c.filter((x) => x.score >= c[0].score - 10).length;
-  if (close >= 2) return `비슷한 후보가 ${close}개 있습니다. 실물과 사진을 비교해 고르거나 각인을 확인하세요.`;
+  const close = c.filter((x) => x.score >= c[0].score - 10);
+  if (close.length >= 2) {
+    if (close.every((x) => imprintKey(x) === imprintKey(c[0])))
+      return `각인·모양이 똑같은 약이 ${close.length}개 있습니다 (같은 성분의 다른 회사 제품일 수 있음). 포장이나 처방 내역으로 구분하세요.`;
+    return `비슷한 후보가 ${close.length}개 있습니다. 실물과 사진을 비교해 고르거나 각인을 확인하세요.`;
+  }
   if (c[0].checks["각인"] === "partial") return "각인 일부가 불확실합니다.";
   return null;
 }
+
+const imprintKey = (c) => [c.print_front, c.print_back].map((v) => (v || "").toUpperCase().replace(/분할선|마크|[^0-9A-Z가-힣]/g, "")).sort().join("|");
+const hasImprint = (p) => p.source === "manual" || !!`${p.imprint_front}${p.imprint_back}`.replace(/\?/g, "");
 
 const opts = (list, sel) => list.map((v) => `<option${v === sel ? " selected" : ""}>${esc(v)}</option>`).join("");
 
@@ -242,12 +250,13 @@ function renderPill(i) {
   }
 
   const cands = p.candidates;
-  const shown = p.showAll ? cands : cands.slice(0, SHOW_CANDIDATES);
+  // 각인 없이 모양·색만 비슷한 약은 수백 개라 의미가 적다 → 눌러야 보이게 한다.
+  const shown = p.showAll ? cands : cands.slice(0, hasImprint(p) ? SHOW_CANDIDATES : 0);
   el.innerHTML = header + `
     ${reason ? `
       <div class="help">
         <p>🔍 ${esc(reason)}</p>
-        <p class="muted small">다시 찍기: 이 알약만 앞면·뒷면을 가까이 찍어 주세요.</p>
+        <p class="muted small">다시 찍기: 이 알약만 10~15cm 거리에서 앞면·뒷면을 한 장씩 찍어 주세요. 작은 알약일수록 가까이!</p>
         <div class="row">
           <label class="btn primary small grow">📷 다시 찍기
             <input type="file" accept="image/*" capture="environment" multiple hidden data-act="retake"></label>
@@ -256,7 +265,7 @@ function renderPill(i) {
       </div>` : ""}
     <p class="busy hidden"></p>
     ${shown.map((c) => candidateHtml(i, c, p)).join("") || '<p class="muted">DB에서 일치하는 후보가 없습니다.</p>'}
-    ${cands.length > shown.length ? `<button class="link more" data-act="more">후보 ${cands.length - shown.length}개 더 보기</button>` : ""}
+    ${cands.length > shown.length ? `<button class="link more" data-act="more">${shown.length ? `후보 ${cands.length - shown.length}개 더 보기` : "모양·색만 비슷한 약 보기 (참고용)"}</button>` : ""}
     <label class="cand none"><input type="radio" name="pill${i}" value="__none"${done && !p.chosen ? " checked" : ""}>해당 없음 / 식별 불가 (약사 의뢰)</label>
     ${reason ? "" : `
       <p class="small muted alt">실물과 다르면:

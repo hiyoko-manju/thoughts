@@ -167,8 +167,9 @@ def find_candidates(conn: sqlite3.Connection, pill: dict, limit: int = 5) -> lis
     back = normalize_imprint(pill.get("imprint_back"))
     has_imprint = bool((front + back).replace("?", ""))
 
+    keys: set[str] = set()
     if has_imprint:
-        # 각인의 앞 2글자로 1차 후보를 좁힌 뒤 유사도를 계산한다.
+        # 각인의 앞뒤 2글자 조각으로 1차 후보를 좁힌 뒤 유사도를 계산한다.
         keys = _prefilter_keys(front, back)
         if keys:
             where = " OR ".join("print_front_norm LIKE ? OR print_back_norm LIKE ?" for _ in keys)
@@ -183,6 +184,16 @@ def find_candidates(conn: sqlite3.Connection, pill: dict, limit: int = 5) -> lis
             [pill.get("shape"), f"%{pill.get('color_primary')}%", f"%{pill.get('color_primary')}%"],
         ).fetchall()
 
+    results = _score_rows(rows, pill, front, back, has_imprint)
+    if has_imprint and not results and keys:
+        # 앞뒤 조각이 모두 잘못 읽혔을 수 있다 (예: 분할선을 'I'로 읽어 'DIO') → 전체에서 다시 찾는다.
+        rows = conn.execute("SELECT * FROM pills WHERE print_front_norm != '' OR print_back_norm != ''").fetchall()
+        results = _score_rows(rows, pill, front, back, has_imprint)
+    results.sort(key=lambda r: r["score"], reverse=True)
+    return results[:limit]
+
+
+def _score_rows(rows: list[sqlite3.Row], pill: dict, front: str, back: str, has_imprint: bool) -> list[dict]:
     results = []
     for row in rows:
         imprint = _imprint_score(front, back, row) if has_imprint else 0.0
@@ -211,8 +222,7 @@ def find_candidates(conn: sqlite3.Connection, pill: dict, limit: int = 5) -> lis
             "score": _score(imprint, checks),
             "checks": checks,
         })
-    results.sort(key=lambda r: r["score"], reverse=True)
-    return results[:limit]
+    return results
 
 
 def stats(conn: sqlite3.Connection) -> dict:

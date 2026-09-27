@@ -47,6 +47,10 @@ REALISTIC = [
      "DRUG_SHAPE": "장방형", "COLOR_CLASS1": "노랑", "FORM_CODE_NAME": "필름코팅정"},
     {"ITEM_SEQ": "T4", "ITEM_NAME": "세타돌세미정", "PRINT_FRONT": "DS", "PRINT_BACK": "S/M",
      "DRUG_SHAPE": "장방형", "COLOR_CLASS1": "노랑", "FORM_CODE_NAME": "필름코팅정"},
+    {"ITEM_SEQ": "T6", "ITEM_NAME": "디오반필름코팅정40밀리그램(발사르탄)", "PRINT_FRONT": "D분할선O",
+     "PRINT_BACK": "NVR", "DRUG_SHAPE": "타원형", "COLOR_CLASS1": "노랑", "FORM_CODE_NAME": "필름코팅정"},
+    {"ITEM_SEQ": "T7", "ITEM_NAME": "타렉필름코팅정40밀리그램(발사르탄)", "PRINT_FRONT": "D분할선O",
+     "PRINT_BACK": "NVR", "DRUG_SHAPE": "타원형", "COLOR_CLASS1": "노랑", "FORM_CODE_NAME": "필름코팅정"},
     {"ITEM_SEQ": "T5", "ITEM_NAME": "리나제틴정", "PRINT_FRONT": "IDL", "PRINT_BACK": "5",
      "DRUG_SHAPE": "원형", "COLOR_CLASS1": "분홍", "FORM_CODE_NAME": "필름코팅정"},
 ]
@@ -195,3 +199,15 @@ def test_password_lock(conn, monkeypatch):
     for _ in range(10):
         client.get("/api/status", auth=("x", "wrong"))
     assert client.get("/api/status", auth=("x", "wrong")).status_code == 429
+
+
+def test_partial_read_of_small_pill(real):
+    # 작은 알약에서 한 글자씩 놓쳐도 찾는다 (디오반: NVR / D분할선O)
+    seqs = [c["item_seq"] for c in pilldb.find_candidates(real, pill(shape="장방형", color_primary="주황",
+                                                                     imprint_front="?VR", imprint_back="D O"))]
+    assert set(seqs[:2]) == {"T6", "T7"}
+
+
+def test_scoreline_misread_as_letter_falls_back_to_full_scan(real):
+    seqs = [c["item_seq"] for c in pilldb.find_candidates(real, pill(imprint_front="DIO"))]
+    assert "T6" in seqs[:2]
