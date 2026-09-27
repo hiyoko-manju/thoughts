@@ -26,9 +26,68 @@ def pill(**kw):
     return {**base, **kw}
 
 
+# 실제 DB 표기 방식을 흉내 낸 행 (사용자 시험에서 나온 사례)
+REALISTIC = [
+    {"ITEM_SEQ": "T1", "ITEM_NAME": "라식스정", "PRINT_FRONT": "DLI분할선DLI", "PRINT_BACK": "-",
+     "DRUG_SHAPE": "원형", "COLOR_CLASS1": "하양", "FORM_CODE_NAME": "나정"},
+    {"ITEM_SEQ": "T2", "ITEM_NAME": "울트라셋세미정", "PRINT_FRONT": "JANSSEN", "PRINT_BACK": "S/M",
+     "DRUG_SHAPE": "타원형", "COLOR_CLASS1": "노랑", "FORM_CODE_NAME": "필름코팅정"},
+    {"ITEM_SEQ": "T3", "ITEM_NAME": "스트롱셋세미정", "PRINT_FRONT": "SS", "PRINT_BACK": "S/M",
+     "DRUG_SHAPE": "장방형", "COLOR_CLASS1": "노랑", "FORM_CODE_NAME": "필름코팅정"},
+    {"ITEM_SEQ": "T4", "ITEM_NAME": "세타돌세미정", "PRINT_FRONT": "DS", "PRINT_BACK": "S/M",
+     "DRUG_SHAPE": "장방형", "COLOR_CLASS1": "노랑", "FORM_CODE_NAME": "필름코팅정"},
+    {"ITEM_SEQ": "T5", "ITEM_NAME": "리나제틴정", "PRINT_FRONT": "IDL", "PRINT_BACK": "5",
+     "DRUG_SHAPE": "원형", "COLOR_CLASS1": "분홍", "FORM_CODE_NAME": "필름코팅정"},
+]
+
+
+@pytest.fixture
+def real(conn):
+    pilldb.upsert(conn, REALISTIC)
+    return conn
+
+
 def test_normalize():
     assert pilldb.normalize_imprint(" d-m 5 ") == "DM5"
     assert pilldb.normalize_imprint("마크 AB") == "AB"
+    assert pilldb.normalize_imprint("DLI분할선DLI") == "DLIDLI"
+    assert pilldb.normalize_imprint("-") == ""
+
+
+def test_scoreline_split_imprint_read_as_one_face(real):
+    top = pilldb.find_candidates(real, pill(imprint_front="DLI DLI"))
+    assert top[0]["item_seq"] == "T1" and top[0]["checks"]["각인"] is True
+
+
+def test_scoreline_split_imprint_read_as_two_faces(real):
+    top = pilldb.find_candidates(real, pill(imprint_front="DLI", imprint_back="DLI"))
+    assert top[0]["item_seq"] == "T1" and top[0]["checks"]["각인"] is True
+
+
+def test_exact_imprint_beats_partial_with_better_shape(real):
+    # 사진에서 타원형을 장방형으로 봐도 각인이 정확히 맞는 약이 1등이어야 한다.
+    top = pilldb.find_candidates(real, pill(shape="장방형", color_primary="노랑",
+                                            imprint_front="JANSSEN", imprint_back="S/M"))
+    assert top[0]["item_seq"] == "T2"
+    assert top[0]["checks"]["모양"] == "near"
+    assert top[0]["score"] - top[1]["score"] > 15
+
+
+def test_near_color(real):
+    top = pilldb.find_candidates(real, pill(color_primary="주황", imprint_front="IDL", imprint_back="5"))
+    assert top[0]["checks"]["색상"] == "near"
+
+
+def test_misread_first_letter_still_found(real):
+    seqs = [c["item_seq"] for c in pilldb.find_candidates(real, pill(imprint_front="0LIDLI"))]
+    assert "T1" in seqs
+
+
+def test_renormalize(real):
+    real.execute("UPDATE pills SET print_front_norm = 'STALE'")
+    pilldb.renormalize(real)
+    row = real.execute("SELECT print_front_norm FROM pills WHERE item_seq = 'T1'").fetchone()
+    assert row[0] == "DLIDLI"
 
 
 def test_exact_imprint_distinguishes_strengths(conn):

@@ -95,6 +95,12 @@ def sync_csv(path: str) -> None:
         print("완료:", pilldb.stats(conn))
 
 
+def renormalize() -> None:
+    with pilldb.connect() as conn:
+        pilldb.renormalize(conn)
+        print("각인 비교값 재계산:", pilldb.stats(conn))
+
+
 def sync_demo() -> None:
     demo = Path(__file__).resolve().parent.parent / "data" / "demo_pills.json"
     with pilldb.connect() as conn:
@@ -110,5 +116,7 @@ if __name__ == "__main__":
         sync_csv(sys.argv[2])
     elif cmd == "demo":
         sync_demo()
+    elif cmd == "renormalize":
+        renormalize()
     else:
         print(__doc__)

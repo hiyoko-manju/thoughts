@@ -27,11 +27,17 @@ CREATE INDEX IF NOT EXISTS idx_pb ON pills(print_back_norm);
 """
 
 
+# DB 각인 필드에 섞여 있는 설명 문구. 실제 각인이 아니므로 비교 전에 뺀다 (예: 'DLI분할선DLI').
+ANNOTATIONS = ["십자분할선", "분할선", "각인없음", "마크", "없음"]
+
+
 def normalize_imprint(s: str | None) -> str:
-    """대소문자·공백·구두점 차이를 없앤다. '마크' 표기는 제거한다."""
+    """대소문자·공백·구두점 차이와 설명 문구를 없앤다."""
     if not s:
         return ""
-    s = s.upper().replace("마크", "")
+    s = s.upper()
+    for word in ANNOTATIONS:
+        s = s.replace(word, "")
     return re.sub(r"[^0-9A-Z가-힣?]", "", s)
 
 
@@ -54,6 +60,15 @@ def upsert(conn: sqlite3.Connection, rows: list[dict]) -> None:
     conn.commit()
 
 
+def renormalize(conn: sqlite3.Connection) -> None:
+    """정규화 규칙이 바뀌었을 때 저장된 각인 비교값을 다시 계산한다."""
+    rows = conn.execute("SELECT item_seq, print_front, print_back FROM pills").fetchall()
+    conn.executemany("UPDATE pills SET print_front_norm = ?, print_back_norm = ? WHERE item_seq = ?",
+                     [(normalize_imprint(r["print_front"]), normalize_imprint(r["print_back"]), r["item_seq"])
+                      for r in rows])
+    conn.commit()
+
+
 def _imprint_similarity(observed: str, actual: str) -> float:
     """0~1. '?'는 아무 글자와 일치하는 것으로 본다."""
     if not observed or not actual:
@@ -67,7 +82,11 @@ def _imprint_similarity(observed: str, actual: str) -> float:
 
 
 def _imprint_score(front: str, back: str, row: sqlite3.Row) -> float:
-    """관찰한 앞/뒤 각인과 DB의 앞/뒤를 양방향으로 비교 (앞뒷면 구분이 불확실하므로)."""
+    """관찰한 각인과 DB 각인의 유사도 (0~1).
+
+    앞뒷면 구분이 불확실하므로 뒤바꿔서도 비교하고, 분할선 양쪽 글자를 앞/뒷면으로 나눠 읽은
+    경우를 위해 두 면을 이어 붙여서도 비교한다.
+    """
     pf, pb = row["print_front_norm"] or "", row["print_back_norm"] or ""
 
     def pair(a: str, b: str) -> float:
@@ -75,21 +94,41 @@ def _imprint_score(front: str, back: str, row: sqlite3.Row) -> float:
                               _imprint_similarity(back, b) if back else None) if s is not None]
         return sum(scores) / len(scores) if scores else 0.0
 
-    return max(pair(pf, pb), pair(pb, pf))
+    combined = 0.0
+    if front and back:
+        combined = max(_imprint_similarity(front + back, pf + pb), _imprint_similarity(front + back, pb + pf))
+    return max(pair(pf, pb), pair(pb, pf), combined)
 
 
-def _shape_ok(observed: str, actual: str | None) -> bool | None:
+# 사진으로 구분이 어려운 이웃 값들: 불일치가 아니라 '근접'으로 본다.
+SHAPE_NEAR = [{"타원형", "장방형"}, {"사각형", "마름모형"}, {"오각형", "육각형"}, {"육각형", "팔각형"}]
+COLOR_NEAR = [{"분홍", "주황"}, {"분홍", "빨강"}, {"주황", "빨강"}, {"노랑", "주황"}, {"하양", "노랑"},
+              {"하양", "회색"}, {"하양", "투명"}, {"연두", "초록"}, {"초록", "청록"}, {"청록", "파랑"},
+              {"파랑", "남색"}, {"자주", "보라"}, {"자주", "분홍"}, {"갈색", "주황"}]
+
+
+def _near(a: str, b: str, groups: list[set]) -> bool:
+    return any(a in g and b in g for g in groups)
+
+
+def _shape_ok(observed: str, actual: str | None) -> bool | str | None:
     if observed in ("불명", "") or not actual:
         return None
-    return observed == actual
+    if observed == actual:
+        return True
+    return "near" if _near(observed, actual, SHAPE_NEAR) else False
 
 
-def _color_ok(p: dict, row: sqlite3.Row) -> bool | None:
+def _color_ok(p: dict, row: sqlite3.Row) -> bool | str | None:
     obs = {c for c in (p.get("color_primary"), p.get("color_secondary")) if c and c not in ("불명", "없음")}
     if not obs:
         return None
-    actual = " ".join(filter(None, [row["color_class1"], row["color_class2"]]))
-    return any(c in actual for c in obs)
+    actual = [c for c in (row["color_class1"], row["color_class2"]) if c]
+    if any(o in a for o in obs for a in actual):
+        return True
+    if any(_near(o, part.strip(), COLOR_NEAR) for o in obs for a in actual for part in re.split(r"[,|/ ]", a)):
+        return "near"
+    return False
 
 
 def _form_ok(observed: str, actual: str | None) -> bool | None:
@@ -99,6 +138,30 @@ def _form_ok(observed: str, actual: str | None) -> bool | None:
     return (observed != "정제") == is_capsule
 
 
+# 점수: 각인이 압도적으로 중요하다. 모양·색·제형은 같은 각인 안에서 순서를 가르는 정도.
+IMPRINT_WEIGHT = 100
+FEATURE_WEIGHTS = {"모양": 10, "색상": 10, "제형": 5}
+MAX_SCORE = IMPRINT_WEIGHT + sum(FEATURE_WEIGHTS.values())
+
+
+def _score(imprint: float, checks: dict) -> int:
+    total = IMPRINT_WEIGHT * imprint ** 2
+    for key, w in FEATURE_WEIGHTS.items():
+        v = checks[key]
+        total += w if v is True else w / 2 if v == "near" else -w if v is False else 0
+    return round(max(total, 0) / MAX_SCORE * 100)
+
+
+def _prefilter_keys(front: str, back: str) -> set[str]:
+    """DB에서 1차 후보를 좁힐 2글자 조각들. 첫 글자를 잘못 읽어도 걸리도록 앞뒤 조각을 모두 쓴다."""
+    keys = set()
+    for k in (front, back):
+        for piece in (k[:2], k[-2:]):
+            if len(piece) == 2 and "?" not in piece:
+                keys.add(piece)
+    return keys
+
+
 def find_candidates(conn: sqlite3.Connection, pill: dict, limit: int = 5) -> list[dict]:
     front = normalize_imprint(pill.get("imprint_front"))
     back = normalize_imprint(pill.get("imprint_back"))
@@ -106,7 +169,7 @@ def find_candidates(conn: sqlite3.Connection, pill: dict, limit: int = 5) -> lis
 
     if has_imprint:
         # 각인의 앞 2글자로 1차 후보를 좁힌 뒤 유사도를 계산한다.
-        keys = {k[:2] for k in (front, back) if len(k.replace("?", "")) >= 2 and "?" not in k[:2]}
+        keys = _prefilter_keys(front, back)
         if keys:
             where = " OR ".join("print_front_norm LIKE ? OR print_back_norm LIKE ?" for _ in keys)
             params = [f"%{k}%" for k in keys for _ in range(2)]
@@ -131,12 +194,6 @@ def find_candidates(conn: sqlite3.Connection, pill: dict, limit: int = 5) -> lis
             "색상": _color_ok(pill, row),
             "제형": _form_ok(pill.get("form", ""), row["form_code_name"]),
         }
-        score = imprint * 70
-        for key, weight in (("모양", 12), ("색상", 12), ("제형", 6)):
-            if checks[key] is True:
-                score += weight
-            elif checks[key] is False:
-                score -= weight
         results.append({
             "item_seq": row["item_seq"],
             "item_name": row["item_name"],
@@ -151,7 +208,7 @@ def find_candidates(conn: sqlite3.Connection, pill: dict, limit: int = 5) -> lis
             "form_code_name": row["form_code_name"],
             "class_name": row["class_name"],
             "etc_otc_name": row["etc_otc_name"],
-            "score": round(max(score, 0)),
+            "score": _score(imprint, checks),
             "checks": checks,
         })
     results.sort(key=lambda r: r["score"], reverse=True)
