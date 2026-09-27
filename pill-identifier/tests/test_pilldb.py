@@ -94,3 +94,16 @@ def test_retake_passes_single_flag(conn, monkeypatch):
     client = TestClient(main.app)
     client.post("/api/identify?single=true", files=[("images", ("a.jpg", b"x", "image/jpeg"))])
     assert seen["single"] is True
+
+
+def test_password_lock(conn, monkeypatch):
+    monkeypatch.setenv("APP_PASSWORD", "비번123")
+    monkeypatch.setattr(main, "_failures", __import__("collections").defaultdict(list))
+    client = TestClient(main.app)
+    assert client.get("/api/status").status_code == 401
+    assert client.get("/api/status", auth=("x", "wrong")).status_code == 401
+    ok = client.get("/api/status", headers={"Authorization": "Basic " + __import__("base64").b64encode("x:비번123".encode()).decode()})
+    assert ok.status_code == 200
+    for _ in range(10):
+        client.get("/api/status", auth=("x", "wrong"))
+    assert client.get("/api/status", auth=("x", "wrong")).status_code == 429

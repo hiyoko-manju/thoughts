@@ -1,8 +1,13 @@
+import base64
+import os
+import secrets
+import time
+from collections import defaultdict
 from pathlib import Path
 
 import anthropic
-from fastapi import FastAPI, File, HTTPException, Query, UploadFile
-from fastapi.responses import FileResponse
+from fastapi import FastAPI, File, HTTPException, Query, Request, UploadFile
+from fastapi.responses import FileResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
@@ -15,7 +20,48 @@ MAX_IMAGES = 6
 MAX_BYTES = 5 * 1024 * 1024  # 브라우저에서 축소해 보내므로 보통 1MB 미만
 
 app = FastAPI(title="지참약 사진 식별 보조")
+
+# 인터넷에 올릴 때는 APP_PASSWORD를 설정해 잠근다 (브라우저 기본 로그인 창, 아이디는 아무거나).
+FAIL_WINDOW = 600
+FAIL_LIMIT = 10
+_failures: dict[str, list[float]] = defaultdict(list)
+
+
+def _password_ok(header: str | None, password: str) -> bool:
+    if not header or not header.startswith("Basic "):
+        return False
+    try:
+        _, _, given = base64.b64decode(header[6:]).decode("utf-8").partition(":")
+    except (ValueError, UnicodeDecodeError):
+        return False
+    return secrets.compare_digest(given.encode(), password.encode())
+
+
+@app.middleware("http")
+async def require_password(request: Request, call_next):
+    password = os.environ.get("APP_PASSWORD")
+    if not password or request.url.path == "/healthz":
+        return await call_next(request)
+    ip = request.headers.get("x-forwarded-for", request.client.host if request.client else "").split(",")[0].strip()
+    now = time.time()
+    recent = [t for t in _failures[ip] if now - t < FAIL_WINDOW]
+    _failures[ip] = recent
+    if len(recent) >= FAIL_LIMIT:
+        return PlainTextResponse("비밀번호를 여러 번 틀렸습니다. 10분 뒤 다시 시도하세요.", status_code=429)
+    auth = request.headers.get("authorization")
+    if _password_ok(auth, password):
+        return await call_next(request)
+    if auth:
+        recent.append(now)
+    return PlainTextResponse("비밀번호가 필요합니다.", status_code=401,
+                             headers={"WWW-Authenticate": 'Basic realm="pill", charset="UTF-8"'})
+
 app.mount("/static", StaticFiles(directory=STATIC), name="static")
+
+
+@app.get("/healthz")
+def healthz():
+    return {"ok": True}
 
 
 @app.get("/")
