@@ -79,13 +79,41 @@ function startProgress(el, textEl) {
   return () => { clearInterval(timer); el.classList.add("hidden"); };
 }
 
-async function postImages(list, url) {
-  const form = new FormData();
-  for (const [i, f] of list.entries()) form.append("images", await shrink(f), `photo${i + 1}.jpg`);
-  const r = await fetch(url, { method: "POST", body: form });
+async function getJson(url, init) {
+  let r;
+  try {
+    r = await fetch(url, init);
+  } catch {
+    throw new Error("인터넷 연결이 끊겼습니다. 연결 상태를 확인하고 다시 시도해 주세요.");
+  }
   const data = await r.json().catch(() => ({}));
   if (!r.ok) throw new Error(data.detail || `오류 ${r.status}`);
   return data;
+}
+
+const sleep = (ms) => new Promise((res) => setTimeout(res, ms));
+
+// 사진을 올리면 작업 번호를 받고, 결과가 나올 때까지 2초마다 확인한다 (분석이 1분 넘게 걸릴 수 있음).
+async function postImages(list, url) {
+  const form = new FormData();
+  for (const [i, f] of list.entries()) form.append("images", await shrink(f), `photo${i + 1}.jpg`);
+  const { job } = await getJson(url, { method: "POST", body: form });
+  let misses = 0;
+  for (;;) {
+    await sleep(2000);
+    let status;
+    try {
+      status = await getJson(`/api/jobs/${job}`);
+      misses = 0;
+    } catch (e) {
+      // 잠깐 끊긴 건 다시 시도, 계속 안 되면 포기
+      if (++misses >= 5 || e.message.includes("작업을 찾을 수 없습니다")) throw e;
+      continue;
+    }
+    if (status.status === "done") return status.result;
+    if (status.status === "error") throw new Error(status.error);
+    if (status.elapsed > 300) throw new Error("분석이 너무 오래 걸립니다. 사진 수를 줄여 다시 시도해 주세요.");
+  }
 }
 
 runBtn.addEventListener("click", async () => {
@@ -312,11 +340,9 @@ resultsEl.addEventListener("submit", async (e) => {
   }
   setBusy(i, "⏳ 검색 중…");
   try {
-    const r = await fetch("/api/search", {
+    const data = await getJson("/api/search", {
       method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(q),
     });
-    const data = await r.json();
-    if (!r.ok) throw new Error(data.detail || `오류 ${r.status}`);
     pills[i] = { ...pills[i], ...q, imprint_confidence: "높음", has_mark: false, showAll: false,
       candidates: data.candidates, source: "manual", chosen: null, decided: false };
     renderPill(i);

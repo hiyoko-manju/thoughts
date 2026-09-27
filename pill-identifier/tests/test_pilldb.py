@@ -1,4 +1,5 @@
 import json
+import time
 from pathlib import Path
 
 import pytest
@@ -17,6 +18,16 @@ def conn(tmp_path, monkeypatch):
     pilldb.upsert(c, DEMO)
     yield c
     c.close()
+
+
+def wait_job(client, job, timeout=5.0):
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        status = client.get(f"/api/jobs/{job}").json()
+        if status["status"] != "running":
+            return status
+        time.sleep(0.05)
+    raise AssertionError("job did not finish")
 
 
 def pill(**kw):
@@ -121,12 +132,29 @@ def test_identify_endpoint(conn, monkeypatch):
     fake = {"pills": [pill(imprint_front="EX", imprint_back="SR", shape="타원형", color_primary="노랑")],
             "photo_issues": []}
     monkeypatch.setattr(main, "extract_pill_features", lambda images, single=False: fake)
-    client = TestClient(main.app)
-    r = client.post("/api/identify", files=[("images", ("a.jpg", b"\xff\xd8fake", "image/jpeg"))])
-    assert r.status_code == 200
-    body = r.json()
+    with TestClient(main.app) as client:
+        r = client.post("/api/identify", files=[("images", ("a.jpg", b"\xff\xd8fake", "image/jpeg"))])
+        assert r.status_code == 200
+        status = wait_job(client, r.json()["job"])
+    assert status["status"] == "done"
+    body = status["result"]
     assert body["pills"][0]["candidates"][0]["item_seq"] == "DEMO0003"
     assert body["db"]["demo_only"] is True
+
+
+def test_identify_error_is_reported(conn, monkeypatch):
+    def boom(images, single=False):
+        raise main.VisionError("응답이 잘렸습니다.")
+
+    monkeypatch.setattr(main, "extract_pill_features", boom)
+    with TestClient(main.app) as client:
+        job = client.post("/api/identify", files=[("images", ("a.jpg", b"x", "image/jpeg"))]).json()["job"]
+        status = wait_job(client, job)
+    assert status == {"status": "error", "error": "응답이 잘렸습니다.", "elapsed": status["elapsed"]}
+
+
+def test_unknown_job(conn):
+    assert TestClient(main.app).get("/api/jobs/nope").status_code == 404
 
 
 def test_rejects_non_image(conn):
@@ -150,8 +178,9 @@ def test_retake_passes_single_flag(conn, monkeypatch):
         return {"pills": [], "photo_issues": []}
 
     monkeypatch.setattr(main, "extract_pill_features", fake)
-    client = TestClient(main.app)
-    client.post("/api/identify?single=true", files=[("images", ("a.jpg", b"x", "image/jpeg"))])
+    with TestClient(main.app) as client:
+        job = client.post("/api/identify?single=true", files=[("images", ("a.jpg", b"x", "image/jpeg"))]).json()["job"]
+        wait_job(client, job)
     assert seen["single"] is True
 
 

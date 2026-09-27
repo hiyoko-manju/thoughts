@@ -50,13 +50,40 @@ def test_zoom_loop_and_thumbnails():
 
     results = client.calls[1]["messages"][-1]["content"]
     ok, bad = results
-    assert ok["tool_use_id"] == "t1" and [b["type"] for b in ok["content"]] == ["text", "image", "text", "image"]
+    assert ok["tool_use_id"] == "t1" and [b["type"] for b in ok["content"]] == ["text", "image"]
     assert bad["is_error"] is True and "사진 번호" in bad["content"]
 
     pill = out["pills"][0]
     assert "views" not in pill
     assert len(pill["photos"]) == 1 and pill["photos"][0].startswith("data:image/jpeg;base64,")
-    assert out["zooms"] == 1
+    assert out["zooms"] == 1 and out["mode"] == "zoom"
+
+
+def test_images_per_request_stay_within_limit():
+    # 사진 6장이면 확대는 14번까지만 (6 + 14 = 20장)
+    client = FakeClient()
+    vision.extract_pill_features([(jpeg(300, 300), "image/jpeg")] * 6, client=client)
+    assert "14번" in client.calls[0]["system"]
+
+
+def test_falls_back_to_simple_mode_on_400():
+    import anthropic
+    import httpx
+
+    class RejectTools(FakeClient):
+        def create(self, **kw):
+            if "tools" in kw:
+                self.calls.append(kw)
+                raise anthropic.BadRequestError(
+                    "bad", response=httpx.Response(400, request=httpx.Request("POST", "https://x")), body=None)
+            self.calls.append(kw)
+            return NS(stop_reason="end_turn", content=[NS(type="text", text=json.dumps(RESULT))])
+
+    client = RejectTools()
+    out = vision.extract_pill_features([(jpeg(800, 600), "image/jpeg")], client=client)
+    assert out["mode"] == "simple" and out["zooms"] == 0
+    assert "tools" not in client.calls[-1] and "cache_control" not in client.calls[-1]
+    assert "zoom" not in client.calls[-1]["system"]
 
 
 def test_zoom_limit(monkeypatch):

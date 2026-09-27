@@ -1,7 +1,10 @@
+import asyncio
 import base64
+import logging
 import os
 import secrets
 import time
+import uuid
 from collections import defaultdict
 from pathlib import Path
 
@@ -10,6 +13,7 @@ from fastapi import FastAPI, File, HTTPException, Query, Request, UploadFile
 from fastapi.responses import FileResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
+from starlette.concurrency import run_in_threadpool
 
 from . import pilldb
 from .vision import COLORS, FORMS, SHAPES, VisionError, extract_pill_features
@@ -18,6 +22,9 @@ STATIC = Path(__file__).resolve().parent.parent / "static"
 ALLOWED_TYPES = {"image/jpeg", "image/png", "image/webp", "image/gif"}
 MAX_IMAGES = 6
 MAX_BYTES = 5 * 1024 * 1024  # 브라우저에서 축소해 보내므로 보통 1MB 미만
+
+logging.basicConfig(level=logging.INFO)
+log = logging.getLogger("pill")
 
 app = FastAPI(title="지참약 사진 식별 보조")
 
@@ -91,6 +98,44 @@ def search(q: ManualQuery):
         return {"candidates": pilldb.find_candidates(conn, q.model_dump())}
 
 
+# 분석은 1분 넘게 걸릴 수 있다. 휴대폰 브라우저는 오래 기다리는 요청을 끊으므로
+# 바로 작업 번호를 돌려주고, 화면이 2초마다 결과를 물어보게 한다.
+JOB_TTL = 15 * 60
+_jobs: dict[str, dict] = {}
+_tasks: set[asyncio.Task] = set()
+
+
+def _error_message(e: Exception) -> str:
+    if isinstance(e, VisionError):
+        return str(e)
+    if isinstance(e, anthropic.RateLimitError):
+        return "요청이 많습니다. 잠시 후 다시 시도해 주세요."
+    if isinstance(e, anthropic.AuthenticationError):
+        return "Anthropic API 키가 올바르지 않습니다. Render의 ANTHROPIC_API_KEY를 확인하세요."
+    if isinstance(e, anthropic.APIStatusError):
+        detail = getattr(e, "message", "") or ""
+        return f"이미지 분석 서비스 오류 ({e.status_code}): {detail[:200]}"
+    if isinstance(e, anthropic.APIConnectionError):
+        return "이미지 분석 서비스에 연결할 수 없습니다."
+    return f"알 수 없는 오류: {type(e).__name__}"
+
+
+async def _run_job(job_id: str, payload: list, single: bool) -> None:
+    job = _jobs[job_id]
+    try:
+        features = await run_in_threadpool(extract_pill_features, payload, single=single)
+        with pilldb.connect() as conn:
+            for pill in features["pills"]:
+                pill["candidates"] = pilldb.find_candidates(conn, pill)
+            features["db"] = pilldb.stats(conn)
+        job.update(status="done", result=features)
+        log.info("job %s done: %d pills, %s zooms, mode=%s", job_id, len(features["pills"]),
+                 features.get("zooms"), features.get("mode"))
+    except Exception as e:  # 어떤 오류든 화면에 알려야 한다
+        log.exception("job %s failed", job_id)
+        job.update(status="error", error=_error_message(e))
+
+
 @app.post("/api/identify")
 async def identify(images: list[UploadFile] = File(...), single: bool = Query(False)):
     if not images or len(images) > MAX_IMAGES:
@@ -105,19 +150,20 @@ async def identify(images: list[UploadFile] = File(...), single: bool = Query(Fa
         payload.append((data, f.content_type))
     # 사진은 메모리에서만 처리하고 서버에 저장하지 않는다.
 
-    try:
-        features = extract_pill_features(payload, single=single)
-    except VisionError as e:
-        raise HTTPException(502, str(e))
-    except anthropic.RateLimitError:
-        raise HTTPException(429, "요청이 많습니다. 잠시 후 다시 시도해 주세요.")
-    except anthropic.APIStatusError as e:
-        raise HTTPException(502, f"이미지 분석 서비스 오류 ({e.status_code})")
-    except anthropic.APIConnectionError:
-        raise HTTPException(502, "이미지 분석 서비스에 연결할 수 없습니다.")
+    now = time.time()
+    for old in [k for k, v in _jobs.items() if now - v["created"] > JOB_TTL]:
+        del _jobs[old]
+    job_id = uuid.uuid4().hex
+    _jobs[job_id] = {"status": "running", "created": now}
+    task = asyncio.create_task(_run_job(job_id, payload, single))
+    _tasks.add(task)
+    task.add_done_callback(_tasks.discard)
+    return {"job": job_id}
 
-    with pilldb.connect() as conn:
-        for pill in features["pills"]:
-            pill["candidates"] = pilldb.find_candidates(conn, pill)
-        db = pilldb.stats(conn)
-    return {**features, "db": db}
+
+@app.get("/api/jobs/{job_id}")
+def job_status(job_id: str):
+    job = _jobs.get(job_id)
+    if job is None:
+        raise HTTPException(404, "작업을 찾을 수 없습니다. 서버가 재시작됐을 수 있으니 다시 분석해 주세요.")
+    return {k: v for k, v in job.items() if k != "created"} | {"elapsed": round(time.time() - job["created"])}
